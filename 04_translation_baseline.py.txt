@@ -1,0 +1,171 @@
+# -*- coding: utf-8 -*-
+"""
+04_translation_baseline.py
+Translation Baseline for Cross-lingual Temporal Validation
+EACL 2027 Submission (ARR August 2026)
+
+Requirements: pip install transformers sentencepiece pandas numpy scipy
+Usage: python 04_translation_baseline.py --data bert_training_data.csv
+"""
+
+import argparse
+import pandas as pd
+import numpy as np
+from scipy.stats import pearsonr
+from transformers import MarianMTModel, MarianTokenizer
+import torch
+
+RISK_CUES_EN = [
+    'suicide', 'suicidal', 'die', 'death',
+    'kill myself', 'end my life', 'no point',
+    'give up', "can't go on", 'hopeless',
+    'worthless', 'self-harm', 'hurt myself',
+    'alive', 'live', 'anxiety', 'depress',
+    'suffer', 'pain', 'hurt', 'harm',
+    'crisis', 'mental', 'trauma', 'stress',
+    'afraid', 'fear', 'lonely', 'empty',
+    'numb', 'burden', 'tired of', 'exhausted',
+    'cannot', "can't", 'difficult',
+    'struggling', 'overwhelm'
+]
+
+RISK_CUES_KO = [
+    '자살', '죽', '의미없', '포기',
+    '살기싫', '힘들', '절망', '그만',
+    '불안', '우울', '괴롭', '고통',
+    '두렵', '무서', '외롭', '공허',
+    '지쳐', '아프', '못하', '어렵'
+]
+
+def compute_density(text, cues):
+    text_lower = str(text).lower()
+    words = text_lower.split()
+    if len(words) == 0:
+        return 0.0
+    count = sum(1 for cue in cues
+                if cue in text_lower)
+    return count / len(words)
+
+def make_curve(density_series, n=20):
+    q = np.linspace(0.05, 0.95, n)
+    return np.quantile(
+        density_series.dropna(), q)
+
+def translate_batch(texts, model,
+                    tokenizer, device,
+                    batch_size=16):
+    translated = []
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i+batch_size]
+        inputs = tokenizer(
+            batch,
+            return_tensors='pt',
+            padding=True,
+            truncation=True,
+            max_length=256).to(device)
+        with torch.no_grad():
+            outputs = model.generate(**inputs)
+        decoded = tokenizer.batch_decode(
+            outputs, skip_special_tokens=True)
+        translated.extend(decoded)
+        if i % 200 == 0:
+            print(f"  {i}/{len(texts)}...")
+    return translated
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data',
+        default='bert_training_data.csv')
+    parser.add_argument('--n_sample',
+        type=int, default=100)
+    parser.add_argument('--seed',
+        type=int, default=42)
+    args = parser.parse_args()
+
+    device = 'cuda' if torch.cuda.is_available() \
+             else 'cpu'
+    print(f"Device: {device}")
+
+    # 데이터 로드
+    df = pd.read_csv(args.data,
+                     encoding='utf-8-sig')
+    ko_df = df[df['lang']=='ko'].copy()
+    en_df = df[df['lang']=='en'].copy()
+    print(f"KO: {len(ko_df)}, EN: {len(en_df)}")
+
+    # 샘플링
+    ko_sample = ko_df.sample(
+        n=args.n_sample,
+        random_state=args.seed)
+
+    # 번역 모델
+    print("\nLoading translation model...")
+    model_name = "Helsinki-NLP/opus-mt-ko-en"
+    tokenizer_mt = MarianTokenizer\
+        .from_pretrained(model_name)
+    model_mt = MarianMTModel\
+        .from_pretrained(model_name).to(device)
+
+    # 번역
+    print(f"Translating {args.n_sample} samples...")
+    ko_translated = translate_batch(
+        ko_sample['text'].tolist(),
+        model_mt, tokenizer_mt, device)
+
+    # Density 계산
+    ko_sample = ko_sample.copy()
+    ko_sample['density_translated'] = [
+        compute_density(t, RISK_CUES_EN)
+        for t in ko_translated]
+    ko_sample['density_ko'] = \
+        ko_sample['text'].apply(
+            lambda x: compute_density(
+                x, RISK_CUES_KO))
+    en_df['density_en'] = \
+        en_df['text'].apply(
+            lambda x: compute_density(
+                x, RISK_CUES_EN))
+
+    # Quantile curves
+    curve_ko   = make_curve(
+        ko_sample['density_ko'])
+    curve_trans = make_curve(
+        ko_sample['density_translated'])
+    curve_en   = make_curve(
+        en_df['density_en'])
+
+    # Shuffled control
+    np.random.seed(args.seed)
+    shuffled = np.random.permutation(
+        ko_sample['density_translated'].values)
+    curve_shuf = make_curve(
+        pd.Series(shuffled))
+
+    # Pearson r
+    r_orig,  p_orig  = pearsonr(curve_ko,    curve_en)
+    r_trans, p_trans = pearsonr(curve_trans, curve_en)
+    r_shuf,  p_shuf  = pearsonr(curve_shuf,  curve_en)
+
+    # 결과
+    print("\n" + "="*50)
+    print("TRANSLATION BASELINE RESULTS")
+    print("="*50)
+    print(f"{'Method':<30} {'r':>6}  {'p':>8}")
+    print("-"*46)
+    print(f"{'Density proxy (Korean)':<30} "
+          f"{r_orig:>6.3f}  {p_orig:>8.4f}")
+    print(f"{'Translation baseline':<30} "
+          f"{r_trans:>6.3f}  {p_trans:>8.4f}")
+    print(f"{'Shuffled control':<30} "
+          f"{r_shuf:>6.3f}  {p_shuf:>8.4f}")
+    print("="*50)
+
+    if r_orig > r_trans:
+        print(f"\n✅ Density proxy wins: "
+              f"+{r_orig-r_trans:.3f}")
+    else:
+        print(f"\n⚠️ Translation wins: "
+              f"+{r_trans-r_orig:.3f}")
+
+if __name__ == '__main__':
+    main()
