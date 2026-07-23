@@ -117,7 +117,15 @@ python 05_supervised_baselines.py \
     --data bert_training_data.csv \
     --skip_klue
 ```
+**Note on Appendix L1-only detection table**: The L1 (severe-risk)
+binary detection results reported in the appendix were obtained
+by modifying `05_supervised_baselines.py`'s label definition from
+`y = df['label'].values` (main risk/no-risk target, used for
+Table 14) to `y = df['L1'].values.astype(int)`, then re-running
+the script. This variant is not included as a separate file but
+can be reproduced with this one-line change.
 
+```
 ### Step 6: MSW-informed detection coverage
 
 ```bash
