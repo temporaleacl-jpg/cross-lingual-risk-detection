@@ -110,13 +110,6 @@ python 05_supervised_baselines.py \
     --openai_key YOUR_KEY
 ```
 
-Skip klue/RoBERTa (no GPU):
-
-```bash
-python 05_supervised_baselines.py \
-    --data bert_training_data.csv \
-    --skip_klue
-```
 **Note on Appendix L1-only detection table**: The L1 (severe-risk)
 binary detection results reported in the appendix were obtained
 by modifying `05_supervised_baselines.py`'s label definition from
